@@ -1,66 +1,48 @@
 package main
 
 import (
+	"context"
+	"github.com/julienschmidt/httprouter"
+	"github.com/inkah-trace/server/bolt"
 	"log"
 	"net/http"
-
+	"github.com/inkah-trace/server/api"
 	"fmt"
-
-	"github.com/graphql-go/graphql"
-	"github.com/graphql-go/graphql-go-handler"
-	"github.com/inkah-trace/server"
-	"golang.org/x/net/context"
+	"github.com/rs/cors"
 )
 
 func main() {
-	// define GraphQL schema using relay library helpers
-	schema, err := graphql.NewSchema(server.Schema)
+	bdbc := bolt.NewClient()
+	bdbc.Path = "./inkah.boltdb"
+	bdbc.Open()
+	defer bdbc.Close()
 
-	if err != nil {
-		log.Fatal(err)
+	router := NewRouter()
+	boltdb_router := AddBoltDBContext(router, bdbc)
+	handler := cors.Default().Handler(boltdb_router)
+
+	fmt.Printf("Starting Inkah server on port %d...\n", 50052)
+	log.Fatal(http.ListenAndServe(":50052", handler))
+}
+
+func NewRouter() *httprouter.Router {
+	router := httprouter.New()
+
+	for _, route := range api.Routes {
+		switch route.Method {
+		case "GET":
+			router.GET(route.Pattern, route.Handle)
+		case "POST":
+			router.POST(route.Pattern, route.Handle)
+		}
 	}
 
-	h := NewCORSHandler(&handler.Config{
-		Schema: &schema,
-		Pretty: true,
+	return router
+}
+
+func AddBoltDBContext(next *httprouter.Router, client *bolt.Client) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), "boltdb", client)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
-
-	fs := http.FileServer(http.Dir("static"))
-
-	// serve HTTP
-	http.Handle("/graphql", h)
-	http.Handle("/", fs)
-	fmt.Println("Server listening on 127.0.0.1:9820")
-	err = http.ListenAndServe("127.0.0.1:9820", nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-}
-
-type CORSHandler struct {
-	graphQLGoHandler *handler.Handler
-}
-
-func (c CORSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// allow cross domain AJAX requests
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "content-type")
-
-	c.graphQLGoHandler.ContextHandler(context.Background(), w, r)
-}
-
-func NewCORSHandler(p *handler.Config) *CORSHandler {
-	if p == nil {
-		p = handler.NewConfig()
-	}
-	if p.Schema == nil {
-		panic("undefined GraphQL schema")
-	}
-
-	return &CORSHandler{
-		graphQLGoHandler: &handler.Handler{
-			Schema: p.Schema,
-		},
-	}
 }
